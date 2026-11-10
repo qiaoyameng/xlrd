@@ -37,6 +37,12 @@ xlrd.formula
 .. automodule:: xlrd.formula
    :members:
 
+xlrd.mergedview
+---------------
+
+.. automodule:: xlrd.mergedview
+   :members:
+
 xlrd.sheet
 ----------
 

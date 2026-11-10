@@ -588,6 +588,22 @@ class Sheet(BaseObject):
 
     col = col_slice
 
+    def merged_view(self):
+        """
+        Build a read-only :class:`xlrd.mergedview.MergedCellView` over
+        this sheet, resolving merged ranges to their anchor values
+        without modifying the sheet's underlying cell arrays.
+
+        Raises :class:`xlrd.mergedview.MergedCellsError` if the sheet's
+        merged ranges overlap or are out of bounds.
+
+        .. note:: Merged ranges are only extracted when the book was
+          opened with ``formatting_info=True``; otherwise the view
+          simply reflects the raw cells.
+        """
+        from .mergedview import MergedCellView
+        return MergedCellView(self)
+
     # === Following methods are used in building the worksheet.
     # === They are not part of the API.
 

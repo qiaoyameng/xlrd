@@ -1,6 +1,17 @@
 Changes
 =======
 
+2.1.0 (unreleased)
+------------------
+
+- Add :class:`xlrd.mergedview.MergedCellView`, an optional read-only
+  merged-cell view over a loaded sheet. Iterating a rectangular window
+  yields, for every position, the logical (anchor) value, the anchor
+  coordinates and the position's own raw cell type, with anchor and
+  position XF indexes kept distinct. The sheet's underlying arrays are
+  never modified, and overlapping or out-of-bounds merged ranges raise
+  :class:`xlrd.mergedview.MergedCellsError` when the view is built.
+
 2.0.2 (14 June 2025)
 --------------------
 

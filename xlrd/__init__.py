@@ -16,6 +16,7 @@ from .book import Book, colname, open_workbook_xls
 from .compdoc import SIGNATURE as XLS_SIGNATURE
 from .formula import *  # is constrained by __all__
 from .info import __VERSION__, __version__
+from .mergedview import MergedCellInfo, MergedCellsError, MergedCellView
 from .sheet import empty_cell
 from .xldate import XLDateError, xldate_as_datetime, xldate_as_tuple
 
