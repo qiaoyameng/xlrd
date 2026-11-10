@@ -11,8 +11,8 @@ from struct import calcsize, unpack
 from .biffh import *
 from .formatting import Format, nearest_colour_index
 from .formula import (
-    FMLA_TYPE_CELL, FMLA_TYPE_SHARED, decompile_formula, dump_formula,
-    rangename2d,
+    FMLA_TYPE_ARRAY, FMLA_TYPE_CELL, FMLA_TYPE_SHARED, FormulaInfo,
+    decompile_formula, dump_formula, extract_formula_refs, rangename2d,
 )
 from .timemachine import *
 
@@ -317,6 +317,16 @@ class Sheet(BaseObject):
     #: .. versionadded:: 0.7.2
     vertical_page_breaks = []
 
+    #: A map of ``(rowx, colx)`` to :class:`~xlrd.formula.FormulaInfo`
+    #: objects for cells that contain a formula.
+    #:
+    #: Populated only if ``open_workbook(..., preserve_formula_info=True)``
+    #: and the workbook is BIFF8; otherwise it is empty. Cell values and
+    #: types are unaffected by this option.
+    #:
+    #: .. versionadded:: 2.1.0
+    formula_info_map = {}
+
     def __init__(self, book, position, name, number):
         self.book = book
         self.biff_version = book.biff_version
@@ -358,6 +368,9 @@ class Sheet(BaseObject):
         self.rich_text_runlist_map = {}
         self.horizontal_page_breaks = []
         self.vertical_page_breaks = []
+        self.formula_info_map = {}
+        self._shared_formula_defs = {}
+        self._last_formula_info = None
         self._xf_index_stats = [0, 0, 0, 0]
         self.visibility = book._sheet_visibility[number] # from BOUNDSHEET record
         for attr, defval in _WINDOW2_options:
@@ -418,6 +431,17 @@ class Sheet(BaseObject):
     def cell_value(self, rowx, colx):
         "Value of the cell in the given row and column."
         return self._cell_values[rowx][colx]
+
+    def cell_formula_info(self, rowx, colx):
+        """
+        :class:`~xlrd.formula.FormulaInfo` object for the cell in the
+        given row and column, or ``None`` if the cell does not contain a
+        formula (or the workbook was not opened with
+        ``preserve_formula_info=True``).
+
+        .. versionadded:: 2.1.0
+        """
+        return self.formula_info_map.get((rowx, colx))
 
     def cell_type(self, rowx, colx):
         """
@@ -804,6 +828,7 @@ class Sheet(BaseObject):
         bk_get_record_parts = bk.get_record_parts
         bv = self.biff_version
         fmt_info = self.formatting_info
+        preserve_formulas = getattr(bk, 'preserve_formula_info', 0) and bv == 80
         do_sst_rich_text = fmt_info and bk._rich_text_runlist_map
         rowinfo_sharing_dict = {}
         txos = {}
@@ -936,6 +961,12 @@ class Sheet(BaseObject):
                 else: # BIFF2
                     rowx, colx, cell_attr,  result_str, flags = local_unpack('<HH3s8sB', data[0:16])
                     xf_index =  self.fixed_BIFF2_xfindex(cell_attr, rowx, colx)
+                if preserve_formulas:
+                    fmla_toks_len = local_unpack('<H', data[20:22])[0]
+                    fmla_toks = bytes(data[22:22+fmla_toks_len])
+                    fmla_cached_type = None
+                    fmla_array_rec = None
+                    fmla_shared_rec = None
                 if blah_formulas: # testing formula dumper
                     #### XXXX FIXME
                     fprintf(self.logfile, "FORMULA: rowx=%d colx=%d\n", rowx, colx)
@@ -956,6 +987,11 @@ class Sheet(BaseObject):
                             elif rc2 == XL_ARRAY:
                                 row1x, rownx, col1x, colnx, array_flags, tokslen = \
                                     local_unpack("<HHBBBxxxxxH", data2[:14])
+                                if preserve_formulas:
+                                    fmla_array_rec = (
+                                        (row1x, rownx, col1x, colnx),
+                                        bytes(data2[14:14+tokslen]),
+                                    )
                                 if blah_formulas:
                                     fprintf(self.logfile, "ARRAY: %d %d %d %d %d\n",
                                         row1x, rownx, col1x, colnx, array_flags)
@@ -963,6 +999,11 @@ class Sheet(BaseObject):
                             elif rc2 == XL_SHRFMLA:
                                 row1x, rownx, col1x, colnx, nfmlas, tokslen = \
                                     local_unpack("<HHBBxBH", data2[:10])
+                                if preserve_formulas:
+                                    fmla_shared_rec = (
+                                        (row1x, rownx, col1x, colnx),
+                                        bytes(data2[10:10+tokslen]),
+                                    )
                                 if blah_formulas:
                                     fprintf(self.logfile, "SHRFMLA (sub): %d %d %d %d %d\n",
                                         row1x, rownx, col1x, colnx, nfmlas)
@@ -981,23 +1022,41 @@ class Sheet(BaseObject):
                         strg = self.string_record_contents(data2)
                         self.put_cell(rowx, colx, XL_CELL_TEXT, strg, xf_index)
                         # if DEBUG: print "FORMULA strg %r" % strg
+                        if preserve_formulas:
+                            fmla_cached_type = XL_CELL_TEXT
                     elif first_byte == 1:
                         # boolean formula result
                         value = BYTES_ORD(result_str[2])
                         self_put_cell(rowx, colx, XL_CELL_BOOLEAN, value, xf_index)
+                        if preserve_formulas:
+                            fmla_cached_type = XL_CELL_BOOLEAN
                     elif first_byte == 2:
                         # Error in cell
                         value = BYTES_ORD(result_str[2])
                         self_put_cell(rowx, colx, XL_CELL_ERROR, value, xf_index)
+                        if preserve_formulas:
+                            fmla_cached_type = XL_CELL_ERROR
                     elif first_byte == 3:
                         # empty ... i.e. empty (zero-length) string, NOT an empty cell.
                         self_put_cell(rowx, colx, XL_CELL_TEXT, "", xf_index)
+                        if preserve_formulas:
+                            fmla_cached_type = XL_CELL_TEXT
                     else:
                         raise XLRDError("unexpected special case (0x%02x) in FORMULA" % first_byte)
                 else:
                     # it is a number
                     d = local_unpack('<d', result_str)[0]
                     self_put_cell(rowx, colx, None, d, xf_index)
+                    if preserve_formulas:
+                        fmla_cached_type = XL_CELL_NUMBER
+                if preserve_formulas:
+                    finfo = FormulaInfo(rowx, colx, fmla_cached_type, fmla_toks)
+                    if fmla_array_rec is not None:
+                        finfo.array_range, finfo.array_tokens = fmla_array_rec
+                    if fmla_shared_rec is not None:
+                        self._shared_formula_defs[(rowx, colx)] = fmla_shared_rec
+                    self.formula_info_map[(rowx, colx)] = finfo
+                    self._last_formula_info = finfo
             elif rc == XL_BOOLERR:
                 rowx, colx, xf_index, value, is_err = local_unpack('<HHHBB', data[:8])
                 # Note OOo Calc 2.0 writes 9-byte BOOLERR records.
@@ -1151,12 +1210,27 @@ class Sheet(BaseObject):
             elif rc == XL_ARRAY:
                 row1x, rownx, col1x, colnx, array_flags, tokslen = \
                     local_unpack("<HHBBBxxxxxH", data[:14])
+                if preserve_formulas:
+                    finfo = self._last_formula_info
+                    if finfo is not None:
+                        finfo.array_range = (row1x, rownx, col1x, colnx)
+                        finfo.array_tokens = bytes(data[14:14+tokslen])
+                    self._last_formula_info = None
                 if blah_formulas:
                     print("ARRAY:", row1x, rownx, col1x, colnx, array_flags, file=self.logfile)
                     # dump_formula(bk, data[14:], tokslen, bv, reldelta=0, blah=1)
             elif rc == XL_SHRFMLA:
                 row1x, rownx, col1x, colnx, nfmlas, tokslen = \
                     local_unpack("<HHBBxBH", data[:10])
+                if preserve_formulas:
+                    finfo = self._last_formula_info
+                    if finfo is not None:
+                        anchor = (finfo.rowx, finfo.colx)
+                        self._shared_formula_defs[anchor] = (
+                            (row1x, rownx, col1x, colnx),
+                            bytes(data[10:10+tokslen]),
+                        )
+                    self._last_formula_info = None
                 if blah_formulas:
                     print("SHRFMLA (main):", row1x, rownx, col1x, colnx, nfmlas, file=self.logfile)
                     decompile_formula(bk, data[10:], tokslen, FMLA_TYPE_SHARED,
@@ -1502,10 +1576,38 @@ class Sheet(BaseObject):
         if not eof_found:
             raise XLRDError("Sheet %d (%r) missing EOF record"
                 % (self.number, self.name))
+        if preserve_formulas:
+            self._finalize_formula_info(bk)
         self.tidy_dimensions()
         self.update_cooked_mag_factors()
         bk._position = oldpos
         return 1
+
+    def _finalize_formula_info(self, bk):
+        # Propagate shared formula definitions to every formula cell in
+        # their range, then extract direct references for each formula
+        # cell. Called once, after all records of the sheet are read.
+        for anchor, (shared_range, shared_tokens) in \
+                self._shared_formula_defs.items():
+            row1x, rownx, col1x, colnx = shared_range
+            for (rowx, colx), finfo in self.formula_info_map.items():
+                if row1x <= rowx <= rownx and col1x <= colx <= colnx:
+                    finfo.shared_range = shared_range
+                    finfo.shared_anchor = anchor
+                    finfo.shared_tokens = shared_tokens
+        for (rowx, colx), finfo in self.formula_info_map.items():
+            if finfo.array_tokens is not None:
+                toks, fmlatype = finfo.array_tokens, FMLA_TYPE_ARRAY
+            elif finfo.shared_anchor is not None:
+                toks, fmlatype = finfo.shared_tokens, FMLA_TYPE_SHARED
+            else:
+                toks, fmlatype = finfo.tokens, FMLA_TYPE_CELL
+            refs, unresolved = extract_formula_refs(
+                bk, toks, len(toks), fmlatype,
+                browx=rowx, bcolx=colx, sheetx=self.number,
+            )
+            finfo.references = tuple(refs)
+            finfo.unresolved = tuple(unresolved)
 
     def string_record_contents(self, data):
         bv = self.biff_version

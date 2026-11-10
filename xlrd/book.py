@@ -61,7 +61,8 @@ def open_workbook_xls(filename=None,
                       file_contents=None,
                       encoding_override=None,
                       formatting_info=False, on_demand=False, ragged_rows=False,
-                      ignore_workbook_corruption=False):
+                      ignore_workbook_corruption=False,
+                      preserve_formula_info=False):
     t0 = perf_counter()
     bk = Book()
     try:
@@ -72,7 +73,8 @@ def open_workbook_xls(filename=None,
             formatting_info=formatting_info,
             on_demand=on_demand,
             ragged_rows=ragged_rows,
-            ignore_workbook_corruption=ignore_workbook_corruption
+            ignore_workbook_corruption=ignore_workbook_corruption,
+            preserve_formula_info=preserve_formula_info,
         )
         t1 = perf_counter()
         bk.load_time_stage_1 = t1 - t0
@@ -601,7 +603,8 @@ class Book(BaseObject):
                      formatting_info=False,
                      on_demand=False,
                      ragged_rows=False,
-                     ignore_workbook_corruption=False
+                     ignore_workbook_corruption=False,
+                     preserve_formula_info=False,
                      ):
         # DEBUG = 0
         self.logfile = logfile
@@ -611,6 +614,7 @@ class Book(BaseObject):
         self.formatting_info = formatting_info
         self.on_demand = on_demand
         self.ragged_rows = ragged_rows
+        self.preserve_formula_info = preserve_formula_info
 
         if not file_contents:
             with open(filename, "rb") as f:

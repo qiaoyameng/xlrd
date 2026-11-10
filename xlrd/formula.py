@@ -25,6 +25,7 @@ __all__ = [
     'decompile_formula',
     'dump_formula',
     'evaluate_name_formula',
+    'extract_formula_refs',
     'okind_dict',
     'rangename3d', 'rangename3drel', 'cellname', 'cellnameabs', 'colname',
     'FMLA_TYPE_CELL',
@@ -33,6 +34,7 @@ __all__ = [
     'FMLA_TYPE_COND_FMT',
     'FMLA_TYPE_DATA_VAL',
     'FMLA_TYPE_NAME',
+    'FormulaInfo', 'FormulaRef',
     'Operand', 'Ref3D',
 ]
 
@@ -687,6 +689,129 @@ class Ref3D(tuple):
         else:
             return "Ref3D(coords=%r, relflags=%r)" \
                 % (self.coords, self.relflags)
+
+#: Kinds of direct reference recorded in :attr:`FormulaRef.kind`.
+FORMULA_REF_CELL = 'cell'
+FORMULA_REF_RANGE = 'range'
+FORMULA_REF_NAME = 'name'
+
+class FormulaRef(object):
+    """
+    A single direct reference extracted from a formula's token stream.
+
+    ``kind`` is one of ``'cell'``, ``'range'`` or ``'name'``.
+
+    For ``'cell'`` and ``'range'`` references, ``sheetx1``/``sheetx2`` are
+    the 0-based indexes of the first and last sheet spanned by the
+    reference (identical for ordinary references), or ``None`` when the
+    reference does not specify a sheet (i.e. it is on the sheet containing
+    the formula). ``rowx1`` .. ``colx2`` are 0-based, inclusive, absolute
+    coordinates; relative components of shared formulas are expanded
+    against the position of the cell that owns the formula.
+
+    For ``'name'`` references, ``name`` holds the name of the referred-to
+    defined name and the coordinate attributes are all ``None``.
+
+    .. note::
+      References to other workbooks are never represented as
+      :class:`FormulaRef` objects; they appear in
+      :attr:`FormulaInfo.unresolved` instead, because external workbooks
+      are not accessed.
+    """
+
+    def __init__(self, kind, sheetx1=None, sheetx2=None,
+                 rowx1=None, rowx2=None, colx1=None, colx2=None, name=None):
+        self.kind = kind
+        self.sheetx1 = sheetx1
+        self.sheetx2 = sheetx2
+        self.rowx1 = rowx1
+        self.rowx2 = rowx2
+        self.colx1 = colx1
+        self.colx2 = colx2
+        self.name = name
+
+    def _key(self):
+        return (
+            self.kind, self.sheetx1, self.sheetx2,
+            self.rowx1, self.rowx2, self.colx1, self.colx2, self.name,
+        )
+
+    def __eq__(self, other):
+        return isinstance(other, FormulaRef) and self._key() == other._key()
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return hash(self._key())
+
+    def __repr__(self):
+        if self.kind == FORMULA_REF_NAME:
+            return "FormulaRef(kind='name', name=%r)" % (self.name, )
+        return (
+            "FormulaRef(kind=%r, sheetx1=%r, sheetx2=%r, "
+            "rowx1=%r, rowx2=%r, colx1=%r, colx2=%r)" % (
+                self.kind, self.sheetx1, self.sheetx2,
+                self.rowx1, self.rowx2, self.colx1, self.colx2,
+            )
+        )
+
+class FormulaInfo(object):
+    """
+    Provenance metadata for a single formula cell, collected only when
+    the workbook is opened with ``preserve_formula_info=True``
+    (BIFF8 workbooks only).
+
+    .. versionadded:: 2.1.0
+    """
+
+    def __init__(self, rowx, colx, cached_type, tokens):
+        #: 0-based row and column indexes of the cell.
+        self.rowx = rowx
+        self.colx = colx
+        #: The type of the cached result stored in the file, one of
+        #: ``XL_CELL_NUMBER``, ``XL_CELL_TEXT``, ``XL_CELL_BOOLEAN`` or
+        #: ``XL_CELL_ERROR``. An empty-string cached result is reported
+        #: as ``XL_CELL_TEXT``. Note this is the type as stored, before
+        #: any XF-based inference (e.g. dates stay ``XL_CELL_NUMBER``).
+        self.cached_type = cached_type
+        #: The raw formula token bytes from the cell's FORMULA record.
+        #: For cells belonging to a shared formula this is typically just
+        #: a ``tExp`` placeholder; see :attr:`shared_tokens`.
+        self.tokens = tokens
+        #: ``(rowx1, rowx2, colx1, colx2)`` (0-based, inclusive) of the
+        #: shared formula this cell belongs to, else ``None``.
+        self.shared_range = None
+        #: ``(rowx, colx)`` of the cell whose SHRFMLA record defines the
+        #: shared formula, else ``None``.
+        self.shared_anchor = None
+        #: The raw token bytes of the shared formula definition, or
+        #: ``None`` if the cell is not part of a shared formula.
+        self.shared_tokens = None
+        #: ``(rowx1, rowx2, colx1, colx2)`` (0-based, inclusive) of the
+        #: array formula this cell belongs to, else ``None``.
+        self.array_range = None
+        #: The raw token bytes of the enclosing ARRAY record, else ``None``.
+        self.array_tokens = None
+        #: Tuple of :class:`FormulaRef` objects for the parseable part of
+        #: the formula.
+        self.references = ()
+        #: Tuple of strings describing parts of the formula that could not
+        #: be resolved (external names, deleted or external references,
+        #: unsupported tokens, ...). A non-empty tuple means
+        #: :attr:`references` is *not* the complete dependency list.
+        self.unresolved = ()
+
+    def __repr__(self):
+        return (
+            "FormulaInfo(rowx=%r, colx=%r, cached_type=%r, "
+            "shared_range=%r, array_range=%r, references=%r, "
+            "unresolved=%r)" % (
+                self.rowx, self.colx, self.cached_type,
+                self.shared_range, self.array_range,
+                self.references, self.unresolved,
+            )
+        )
 
 tAdd = 0x03
 tSub = 0x04
@@ -1881,6 +2006,191 @@ def decompile_formula(bk, fmla, fmlalen,
     else:
         result = stack[0].text
     return result
+
+def extract_formula_refs(bk, fmla, fmlalen, fmlatype, browx, bcolx,
+                         sheetx=None):
+    """
+    Walk a BIFF8 formula token stream and collect its direct references
+    without evaluating anything.
+
+    :param bk: the :class:`~xlrd.book.Book` object (used for sheet and
+      name lookup only; external workbooks are never accessed).
+    :param fmla: the token bytes.
+    :param fmlalen: number of token bytes to consume.
+    :param fmlatype: ``FMLA_TYPE_CELL``, ``FMLA_TYPE_SHARED`` or
+      ``FMLA_TYPE_ARRAY``. For ``FMLA_TYPE_SHARED``, relative row/column
+      components are stored as offsets and are expanded against
+      (``browx``, ``bcolx``).
+    :param browx: 0-based row index of the cell owning the formula.
+    :param bcolx: 0-based column index of the cell owning the formula.
+    :param sheetx: 0-based index of the sheet containing the formula;
+      used as the sheet identity of ordinary (2D) references.
+    :returns: ``(references, unresolved)`` where ``references`` is a list
+      of :class:`FormulaRef` and ``unresolved`` is a list of strings
+      describing anything that could not be resolved (external names,
+      external or deleted references, unsupported tokens). Anything in
+      ``unresolved`` means the dependency list is incomplete.
+    """
+    refs = []
+    unresolved = []
+    sztab = szdict[bk.biff_version]
+    delta_mode = fmlatype == FMLA_TYPE_SHARED
+    data = fmla
+    pos = 0
+
+    def adjust(rowval, colval):
+        row_rel = (colval >> 15) & 1
+        col_rel = (colval >> 14) & 1
+        rowx = rowval
+        colx = colval & 0xff
+        if delta_mode:
+            if row_rel:
+                if rowx >= 32768:
+                    rowx -= 65536
+                rowx += browx
+            if col_rel:
+                if colx >= 128:
+                    colx -= 256
+                colx += bcolx
+        return rowx, colx
+
+    def cell_ref(at):
+        rowval, colval = unpack("<HH", data[at:at+4])
+        return adjust(rowval, colval)
+
+    def area_ref(at):
+        row1val, row2val, col1val, col2val = unpack("<HHHH", data[at:at+8])
+        rowx1, colx1 = adjust(row1val, col1val)
+        rowx2, colx2 = adjust(row2val, col2val)
+        return rowx1, rowx2, colx1, colx2
+
+    def local_sheets(refx):
+        # Map an EXTERNSHEET index to local sheet indexes.
+        # Returns (sheetx1, sheetx2) or None if not resolvable locally.
+        shx1, shx2 = get_externsheet_local_range(bk, refx)
+        if shx1 == -1:
+            # internal reference, no sheet specified
+            return (None, None)
+        if shx1 < 0:
+            # -2: deleted sheet(s); -3: macro sheet; -4: external
+            # workbook; -5: add-ins; others: corrupt
+            return None
+        return (shx1, shx2)
+
+    def name_ref(tgtnamex):
+        if 0 <= tgtnamex < len(bk.name_obj_list):
+            refs.append(FormulaRef(
+                FORMULA_REF_NAME, name=bk.name_obj_list[tgtnamex].name))
+        else:
+            unresolved.append(
+                "defined name index %d out of range" % (tgtnamex + 1, ))
+
+    while 0 <= pos < fmlalen:
+        op = BYTES_ORD(data[pos])
+        opcode = op & 0x1f
+        optype = (op & 0x60) >> 5
+        if optype:
+            opx = opcode + 32
+        else:
+            opx = opcode
+        oname = onames[opx] or "??"
+        sz = sztab[opx]
+        if not optype and opcode == 0x18:
+            # tExtended: length cannot be determined; must stop here.
+            unresolved.append(
+                "unsupported token tExtended (0x%02x); "
+                "remaining tokens not parsed" % op)
+            break
+        if sz == -2:
+            unresolved.append(
+                "unsupported token t%s (0x%02x); "
+                "remaining tokens not parsed" % (oname, op))
+            break
+        if not optype and opcode == 0x17: # tStr: variable length
+            _strg, newpos = unpack_unicode_update_pos(data, pos+1, lenlen=1)
+            sz = newpos - pos
+        elif not optype and opcode == 0x19: # tAttr: variable if Choose
+            subop, nc = unpack("<BH", data[pos+1:pos+4])
+            if subop == 0x04: # Choose
+                sz = nc * 2 + 6
+            else:
+                sz = 4
+        if sz <= 0 or pos + sz > fmlalen:
+            unresolved.append(
+                "malformed token t%s (0x%02x) at offset %d; "
+                "remaining tokens not parsed" % (oname, op, pos))
+            break
+        if not optype:
+            if opcode == 0x01: # tExp: shared/array formula placeholder
+                unresolved.append(
+                    "shared formula placeholder (tExp) with no "
+                    "SHRFMLA definition found")
+            # All other base tokens (operators, parentheses, constants,
+            # tAttr, ...) carry no references.
+        elif opcode == 0x04: # tRef
+            rowx, colx = cell_ref(pos+1)
+            refs.append(FormulaRef(
+                FORMULA_REF_CELL, sheetx, sheetx, rowx, rowx, colx, colx))
+        elif opcode == 0x05: # tArea
+            rowx1, rowx2, colx1, colx2 = area_ref(pos+1)
+            refs.append(FormulaRef(
+                FORMULA_REF_RANGE, sheetx, sheetx,
+                rowx1, rowx2, colx1, colx2))
+        elif opcode == 0x0C: # tRefN
+            rowx, colx = cell_ref(pos+1)
+            refs.append(FormulaRef(
+                FORMULA_REF_CELL, sheetx, sheetx, rowx, rowx, colx, colx))
+        elif opcode == 0x0D: # tAreaN
+            rowx1, rowx2, colx1, colx2 = area_ref(pos+1)
+            refs.append(FormulaRef(
+                FORMULA_REF_RANGE, sheetx, sheetx,
+                rowx1, rowx2, colx1, colx2))
+        elif opcode == 0x03: # tName
+            tgtnamex = unpack("<H", data[pos+1:pos+3])[0] - 1
+            name_ref(tgtnamex)
+        elif opcode == 0x19: # tNameX
+            refx, tgtnamex = unpack("<HH", data[pos+1:pos+5])
+            tgtnamex -= 1
+            sheets = local_sheets(refx)
+            if sheets is None:
+                unresolved.append(
+                    "name #%d in an external or unresolvable workbook "
+                    "reference" % (tgtnamex + 1, ))
+            else:
+                name_ref(tgtnamex)
+        elif opcode == 0x1A: # tRef3d
+            refx = unpack("<H", data[pos+1:pos+3])[0]
+            sheets = local_sheets(refx)
+            if sheets is None:
+                unresolved.append(
+                    "cell reference to an external, deleted or "
+                    "unresolvable sheet")
+            else:
+                rowx, colx = cell_ref(pos+3)
+                refs.append(FormulaRef(
+                    FORMULA_REF_CELL, sheets[0], sheets[1],
+                    rowx, rowx, colx, colx))
+        elif opcode == 0x1B: # tArea3d
+            refx = unpack("<H", data[pos+1:pos+3])[0]
+            sheets = local_sheets(refx)
+            if sheets is None:
+                unresolved.append(
+                    "area reference to an external, deleted or "
+                    "unresolvable sheet")
+            else:
+                rowx1, rowx2, colx1, colx2 = area_ref(pos+3)
+                refs.append(FormulaRef(
+                    FORMULA_REF_RANGE, sheets[0], sheets[1],
+                    rowx1, rowx2, colx1, colx2))
+        elif opcode in (0x0A, 0x0B, 0x1C, 0x1D):
+            # tRefErr, tAreaErr, tRefErr3d, tAreaErr3d: the target of the
+            # reference has been deleted (#REF!); it cannot be enumerated.
+            unresolved.append(
+                "deleted reference (t%s)" % oname)
+        # Remaining operand-class tokens (tArray, tFunc, tFuncVar, tMem*)
+        # introduce no direct cell references.
+        pos += sz
+    return refs, unresolved
 
 #### under deconstruction ###
 def dump_formula(bk, data, fmlalen, bv, reldelta, blah=0, isname=0):

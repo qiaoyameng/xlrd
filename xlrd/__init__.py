@@ -90,7 +90,8 @@ def open_workbook(filename=None,
                   formatting_info=False,
                   on_demand=False,
                   ragged_rows=False,
-                  ignore_workbook_corruption=False
+                  ignore_workbook_corruption=False,
+                  preserve_formula_info=False
                   ):
     """
     Open a spreadsheet file for data extraction.
@@ -160,6 +161,20 @@ def open_workbook(filename=None,
       When ``False`` you may face CompDocError: Workbook corruption.
       When ``True`` that exception will be ignored.
 
+    :param preserve_formula_info:
+
+      The default of ``False`` means no formula metadata is collected.
+
+      When ``True`` (BIFF8 workbooks only), each formula cell gets a
+      :class:`~xlrd.formula.FormulaInfo` object recording the cached
+      result type, the raw formula tokens, any shared/array formula
+      range the cell belongs to, and the formula's direct references.
+      The metadata is available through
+      :attr:`~xlrd.sheet.Sheet.formula_info_map` and
+      :meth:`~xlrd.sheet.Sheet.cell_formula_info`. Cell values and types
+      are unaffected; formulas are never evaluated and external
+      workbooks are never accessed.
+
     :returns: An instance of the :class:`~xlrd.book.Book` class.
     """
 
@@ -180,6 +195,7 @@ def open_workbook(filename=None,
         on_demand=on_demand,
         ragged_rows=ragged_rows,
         ignore_workbook_corruption=ignore_workbook_corruption,
+        preserve_formula_info=preserve_formula_info,
     )
 
     return bk

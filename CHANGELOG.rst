@@ -1,6 +1,18 @@
 Changes
 =======
 
+Unreleased
+----------
+
+- Add the ``preserve_formula_info`` option to :class:`~xlrd.open_workbook`.
+  When enabled (BIFF8 workbooks only), each formula cell keeps its cached
+  result type, raw formula tokens, shared/array formula range and direct
+  references in a :class:`~xlrd.formula.FormulaInfo` object, available via
+  :attr:`~xlrd.sheet.Sheet.formula_info_map` and
+  :meth:`~xlrd.sheet.Sheet.cell_formula_info`. Cell values and types are
+  unchanged, formulas are never evaluated and external workbooks are never
+  accessed.
+
 2.0.2 (14 June 2025)
 --------------------
 
