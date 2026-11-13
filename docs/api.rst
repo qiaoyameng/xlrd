@@ -58,6 +58,12 @@ xlrd.sheet
    :members:
    :exclude-members: Sheet
 
+xlrd.window
+-----------
+
+.. automodule:: xlrd.window
+   :members:
+
 xlrd.xldate
 -----------
 

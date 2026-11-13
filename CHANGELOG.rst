@@ -1,6 +1,22 @@
 Changes
 =======
 
+2.1.0 (unreleased)
+------------------
+
+- Add :meth:`xlrd.book.Book.sheet_rows_window`, a sparse BIFF8 row-window
+  reader. Given half-open row and column ranges, it materialises only the
+  cells inside the window instead of building the worksheet's full cell
+  matrix. Workbook-level shared metadata (SST, XF/FORMAT/FONT tables) is
+  loaded as usual; only out-of-window cells are skipped. The returned
+  :class:`xlrd.window.RowWindow` exposes the same cell types, values and
+  optional XF indexes as slicing a fully loaded
+  :class:`~xlrd.sheet.Sheet`, handles out-of-order records, formula cached
+  values, ``BLANK``/``MULBLANK`` and sparse rows, and never registers a
+  full sheet, so it composes with ``on_demand`` loading,
+  :meth:`~xlrd.book.Book.unload_sheet`, resource release and repeated
+  window reads.
+
 2.0.2 (14 June 2025)
 --------------------
 

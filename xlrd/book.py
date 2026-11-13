@@ -6,7 +6,7 @@ from __future__ import print_function
 
 import struct
 
-from . import compdoc, formatting, sheet
+from . import compdoc, formatting, sheet, window
 from .biffh import *
 from .formula import *
 from .timemachine import *
@@ -503,6 +503,36 @@ class Book(BaseObject):
             except ValueError:
                 raise XLRDError('No sheet named <%r>' % sheet_name_or_index)
         return bool(self._sheet_list[sheetx])
+
+    def sheet_rows_window(self, sheetx, row_lo, row_hi, col_lo=0,
+                          col_hi=256, formatting_info=None):
+        """
+        Read a rectangular window of a worksheet without materialising the
+        worksheet's complete cell matrix.
+
+        :param sheetx: Sheet index in ``range(nsheets)``.
+        :param row_lo: First row of the window (inclusive).
+        :param row_hi: One past the last row of the window.
+        :param col_lo: First column of the window (inclusive).
+        :param col_hi: One past the last column of the window.
+        :param formatting_info: Override the book-level ``formatting_info``
+          flag for this read; ``None`` means "use the book-level flag".
+        :returns: A :class:`xlrd.window.RowWindow`.
+
+        The workbook must have been opened with ``on_demand=True`` (and
+        :meth:`release_resources` not yet called) so that the workbook
+        stream is still available for the scan.  Only BIFF8 workbooks are
+        supported.  This method does not create or register a
+        :class:`~xlrd.sheet.Sheet` object, so it composes freely with
+        ``on_demand`` loading, :meth:`unload_sheet` and repeated window
+        reads of the same sheet.
+
+        .. versionadded:: 2.1.0
+        """
+        return window.read_row_window(
+            self, sheetx, row_lo, row_hi, col_lo, col_hi,
+            formatting_info=formatting_info,
+        )
 
     def unload_sheet(self, sheet_name_or_index):
         """

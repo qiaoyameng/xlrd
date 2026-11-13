@@ -55,3 +55,8 @@ explicitly in the finally part of a try/finally block.
 
 The Book object is also a context manager, so  you can wrap your code in a
 ``with`` statement that will make sure underlying resources are closed.
+
+For workbooks where even one full worksheet does not need to be built,
+:meth:`Book.sheet_rows_window` can scan a BIFF8 worksheet stream and
+materialise only a requested row/column window.  See
+:doc:`row_windows` for details.

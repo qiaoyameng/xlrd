@@ -14,6 +14,7 @@ Details:
    references.rst
    formatting.rst
    on_demand.rst
+   row_windows.rst
    api.rst
 
 For details of how to get involved in development of this package,
