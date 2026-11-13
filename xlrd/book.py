@@ -468,6 +468,117 @@ class Book(BaseObject):
             raise XLRDError('No sheet named <%r>' % sheet_name)
         return self.sheet_by_index(sheetx)
 
+    def sheet_by_index_window(self, sheetx, rowxlo, rowxhi,
+                              colxlo=0, colxhi=None):
+        """
+        Read a rectangular window of a BIFF8 worksheet without materialising
+        the whole sheet.
+
+        :param sheetx: Sheet index in ``range(nsheets)``, or a sheet name.
+
+        :param rowxlo: First row in the half-open row interval.
+
+        :param rowxhi: One past the last row in the half-open row interval.
+
+        :param colxlo: First column in the half-open column interval.
+
+        :param colxhi: One past the last column in the half-open column
+                       interval.  If omitted, the sheet's nominal ``ncols`` is
+                       used when the sheet is already loaded; otherwise 256.
+
+        :returns: A :class:`~xlrd.sheet.SheetWindow`, a list of rows of
+                  :class:`~xlrd.sheet.Cell` objects.  Only cells inside the
+                  window are stored; cells outside it are ignored while the
+                  BIFF records are scanned.
+
+        The worksheet's shared metadata (SST, XF, formats, row/column info,
+        merged ranges, hyperlinks, etc.) is loaded normally.  Record order is
+        irrelevant: cells that belong to the window are accepted wherever they
+        occur in the stream.
+
+        Window reads are only supported for BIFF8 worksheets.  If the workbook
+        stream has already been released, the window is sliced from an
+        already-loaded :class:`~xlrd.sheet.Sheet` if one is available.
+        """
+        if not isinstance(sheetx, int):
+            try:
+                sheetx = self._sheet_names.index(sheetx)
+            except (TypeError, ValueError):
+                raise XLRDError("Sheet %r out of range" % (sheetx,))
+        if not (0 <= sheetx < self.nsheets):
+            raise XLRDError("Sheet index %r out of range" % (sheetx,))
+        if self.biff_version < 80:
+            raise XLRDError(
+                "Windowed reads are only supported for BIFF8 workbooks")
+        if colxhi is None:
+            loaded = self._sheet_list[sheetx]
+            colxhi = loaded.ncols if loaded is not None else 256
+        if not (0 <= rowxlo <= rowxhi <= 65536):
+            raise ValueError("row window must satisfy 0 <= rowxlo <= rowxhi <= 65536")
+        if not (0 <= colxlo <= colxhi <= 256):
+            raise ValueError("column window must satisfy 0 <= colxlo <= colxhi <= 256")
+
+        if self._resources_released or self.mem is None:
+            loaded = self._sheet_list[sheetx]
+            if loaded is None:
+                raise XLRDError(
+                    "Can't read a window after releasing workbook resources.")
+            return loaded.window_slice(rowxlo, rowxhi, colxlo, colxhi)
+
+        saved_position = self._position
+        try:
+            self._position = self._sh_abs_posn[sheetx]
+            self.getbof(XL_WORKSHEET)
+            sh = sheet.SheetWindowParser(
+                self,
+                self._position,
+                self._sheet_names[sheetx],
+                sheetx,
+                rowxlo,
+                rowxhi,
+                colxlo,
+                colxhi,
+            )
+            sh.read(self)
+            return sh.make_window()
+        finally:
+            self._position = saved_position
+
+    def sheet_window_by_index(self, sheetx, rowxlo, rowxhi,
+                              colxlo=0, colxhi=None):
+        """Alias for :meth:`sheet_by_index_window`."""
+        return self.sheet_by_index_window(
+            sheetx, rowxlo, rowxhi, colxlo, colxhi)
+
+    def sheet_window_by_name(self, sheet_name, rowxlo, rowxhi,
+                             colxlo=0, colxhi=None):
+        """Window read keyed by worksheet name."""
+        try:
+            sheetx = self._sheet_names.index(sheet_name)
+        except ValueError:
+            raise XLRDError('No sheet named <%r>' % sheet_name)
+        return self.sheet_by_index_window(
+            sheetx, rowxlo, rowxhi, colxlo, colxhi)
+
+    def get_sheet_window(self, sheetx, rowxlo, rowxhi,
+                         colxlo=0, colxhi=None):
+        """Alias for :meth:`sheet_by_index_window`."""
+        return self.sheet_by_index_window(
+            sheetx, rowxlo, rowxhi, colxlo, colxhi)
+
+    def read_window(self, sheetx, rowxlo, rowxhi,
+                    colxlo=0, colxhi=None):
+        """Alias for :meth:`sheet_by_index_window`."""
+        return self.sheet_by_index_window(
+            sheetx, rowxlo, rowxhi, colxlo, colxhi)
+
+    read_sheet_window = sheet_by_index_window
+    read_row_window = sheet_by_index_window
+    sheet_window = sheet_by_index_window
+    row_window = sheet_by_index_window
+    window = sheet_by_index_window
+    window_by_index = sheet_by_index_window
+
     def __getitem__(self, item):
         """
         Allow indexing with sheet name or index.
@@ -1472,3 +1583,16 @@ def unpack_SST_table(datatab, nstrings):
                 assert _unused_i == nstrings - 1
         strappend(accstrg)
     return strings, richtext_runs
+
+
+def read_sheet_window(book, sheetx, rowxlo, rowxhi,
+                      colxlo=0, colxhi=None):
+    """
+    Module-level convenience wrapper for
+    :meth:`Book.sheet_by_index_window`.
+    """
+    return book.sheet_by_index_window(
+        sheetx, rowxlo, rowxhi, colxlo, colxhi)
+
+
+read_window = read_sheet_window

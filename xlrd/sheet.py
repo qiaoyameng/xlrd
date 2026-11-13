@@ -5,6 +5,8 @@
 
 from __future__ import print_function
 
+import sys
+
 from array import array
 from struct import calcsize, unpack
 
@@ -587,6 +589,82 @@ class Sheet(BaseObject):
         ]
 
     col = col_slice
+
+    def read_window(self, rowxlo, rowxhi, colxlo=0, colxhi=None):
+        """
+        Read a window from this sheet's workbook without loading another
+        complete sheet.
+        """
+        return self.book.sheet_by_index_window(
+            self.number, rowxlo, rowxhi, colxlo, colxhi)
+
+    window = read_window
+
+    def window_slice(self, rowxlo, rowxhi, colxlo=0, colxhi=None):
+        """
+        Return a :class:`SheetWindow` over the given half-open row/column
+        range.
+
+        This method is used as a fallback when a workbook's stream has already
+        been released but the complete sheet is still available in memory.  It
+        creates only the cells that fall inside the requested window.
+        """
+        if colxhi is None:
+            colxhi = self.ncols
+        if not (0 <= rowxlo <= rowxhi <= self.utter_max_rows):
+            raise ValueError("row window out of range")
+        if not (0 <= colxlo <= colxhi <= self.utter_max_cols):
+            raise ValueError("column window out of range")
+        rows = []
+        for rowx in xrange(rowxlo, rowxhi):
+            row = []
+            if self.ragged_rows:
+                if rowx < self.nrows and rowx < len(self._cell_values):
+                    row_len = len(self._cell_values[rowx])
+                else:
+                    row_len = 0
+                width = max(0, min(colxhi, row_len) - colxlo)
+            else:
+                width = colxhi - colxlo
+            for colx in xrange(colxlo, colxlo + width):
+                if (rowx < self.nrows and rowx < len(self._cell_values) and
+                        colx < len(self._cell_values[rowx])):
+                    row.append(self.cell(rowx, colx))
+                else:
+                    xfx = None
+                    if self.formatting_info:
+                        xfx = 15
+                        try:
+                            rowxf = self.rowinfo_map[rowx].xf_index
+                            if rowxf > -1:
+                                xfx = rowxf
+                            else:
+                                xfx = self.colinfo_map[colx].xf_index
+                                if xfx == -1:
+                                    xfx = 15
+                        except KeyError:
+                            try:
+                                xfx = self.colinfo_map[colx].xf_index
+                                if xfx == -1:
+                                    xfx = 15
+                            except KeyError:
+                                pass
+                    row.append(Cell(XL_CELL_EMPTY, UNICODE_LITERAL(''), xfx))
+            rows.append(row)
+        window = SheetWindow(
+            rows,
+            book=self.book,
+            name=self.name,
+            number=self.number,
+            rowxlo=rowxlo,
+            rowxhi=rowxhi,
+            colxlo=colxlo,
+            colxhi=colxhi,
+            formatting_info=self.formatting_info,
+            ragged_rows=self.ragged_rows,
+        )
+        window._copy_metadata_from(self)
+        return window
 
     # === Following methods are used in building the worksheet.
     # === They are not part of the API.
@@ -2332,6 +2410,22 @@ class Cell(BaseObject):
         else:
             return "%s:%r (XF:%r)" % (ctype_text[self.ctype], self.value, self.xf_index)
 
+    def __eq__(self, other):
+        if not isinstance(other, Cell):
+            return NotImplemented
+        return (self.ctype == other.ctype and
+                self.value == other.value and
+                self.xf_index == other.xf_index)
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return result
+        return not result
+
+    def __hash__(self):
+        return hash((self.ctype, self.value, self.xf_index))
+
 empty_cell = Cell(XL_CELL_EMPTY, UNICODE_LITERAL(''))
 
 ##### =============== Colinfo and Rowinfo ============================== #####
@@ -2488,3 +2582,347 @@ class Rowinfo(BaseObject):
             self.additional_space_above,
             self.additional_space_below,
         ) = state
+
+
+class SheetWindowParser(Sheet):
+    """
+    Internal BIFF8 worksheet parser that keeps only a rectangular window of
+    cells in memory.
+
+    The normal :class:`Sheet` parser materialises every cell record it meets.
+    This subclass reuses the same record decoding (including formula cached
+    values and ``BLANK``/``MULBLANK`` handling) but stores only cells whose
+    absolute coordinates fall inside the half-open window requested by the
+    caller.  Rows and columns outside the window are simply discarded; no full
+    worksheet data matrix is ever allocated.
+
+    Instances are created by :meth:`xlrd.book.Book.sheet_by_index_window` and
+    are not part of the public API.
+    """
+
+    def __init__(self, book, position, name, number,
+                 rowxlo, rowxhi, colxlo, colxhi):
+        Sheet.__init__(self, book, position, name, number)
+        self.window_rowxlo = rowxlo
+        self.window_rowxhi = rowxhi
+        self.window_colxlo = colxlo
+        self.window_colxhi = colxhi
+        self.window_nrows = rowxhi - rowxlo
+        self.window_ncols = colxhi - colxlo
+
+        self.nrows = self.window_nrows
+        self.ncols = self.window_ncols
+        empty_values = [UNICODE_LITERAL('')] * self.window_ncols
+        self._cell_values = [empty_values[:] for _unused in xrange(self.window_nrows)]
+        self._cell_types = [self.bt * self.window_ncols
+                            for _unused in xrange(self.window_nrows)]
+        if self.formatting_info:
+            self._cell_xf_indexes = [self.bf * self.window_ncols
+                                     for _unused in xrange(self.window_nrows)]
+        else:
+            self._cell_xf_indexes = []
+        self._window_row_maxcol = {}
+
+        self.put_cell = self.put_cell_window
+
+    def put_cell_window(self, rowx, colx, ctype, value, xf_index):
+        if self.ragged_rows and self.window_rowxlo <= rowx < self.window_rowxhi:
+            last = self._window_row_maxcol.get(rowx, -1)
+            if colx > last:
+                self._window_row_maxcol[rowx] = colx
+        if not (self.window_rowxlo <= rowx < self.window_rowxhi and
+                self.window_colxlo <= colx < self.window_colxhi):
+            return
+        if ctype is None:
+            ctype = self._xf_index_to_xl_type_map[xf_index]
+        row = rowx - self.window_rowxlo
+        col = colx - self.window_colxlo
+        self._cell_types[row][col] = ctype
+        self._cell_values[row][col] = value
+        if self.formatting_info:
+            self._cell_xf_indexes[row][col] = xf_index
+
+    def cell_xf_index(self, rowx, colx):
+        """
+        Resolve formatting for window-relative ``(rowx, colx)``.
+
+        The default hierarchy is the same as :meth:`Sheet.cell_xf_index`, but
+        row and column information is looked up using absolute coordinates.
+        """
+        self.req_fmt_info()
+        xfx = self._cell_xf_indexes[rowx][colx]
+        if xfx > -1:
+            self._xf_index_stats[0] += 1
+            return xfx
+        absrowx = rowx + self.window_rowxlo
+        abscolx = colx + self.window_colxlo
+        try:
+            xfx = self.rowinfo_map[absrowx].xf_index
+            if xfx > -1:
+                self._xf_index_stats[1] += 1
+                return xfx
+        except KeyError:
+            pass
+        try:
+            xfx = self.colinfo_map[abscolx].xf_index
+            if xfx == -1:
+                xfx = 15
+            self._xf_index_stats[2] += 1
+            return xfx
+        except KeyError:
+            self._xf_index_stats[3] += 1
+            return 15
+
+    def tidy_dimensions(self):
+        self.nrows = self.window_nrows
+        self.ncols = self.window_ncols
+
+    def make_window(self):
+        rows = []
+        for rowx in xrange(self.window_nrows):
+            if self.ragged_rows:
+                absrowx = rowx + self.window_rowxlo
+                row_end = min(
+                    self.window_colxhi,
+                    self._window_row_maxcol.get(absrowx, -1) + 1,
+                )
+                width = max(0, row_end - self.window_colxlo)
+            else:
+                width = self.window_ncols
+            rows.append(
+                [self.cell(rowx, colx) for colx in xrange(width)]
+            )
+        window = SheetWindow(
+            rows,
+            book=self.book,
+            name=self.name,
+            number=self.number,
+            rowxlo=self.window_rowxlo,
+            rowxhi=self.window_rowxhi,
+            colxlo=self.window_colxlo,
+            colxhi=self.window_colxhi,
+            formatting_info=self.formatting_info,
+            ragged_rows=self.ragged_rows,
+        )
+        window._copy_metadata_from(self)
+        return window
+
+
+class SheetWindow(list):
+    """
+    Rectangle of cells read from a BIFF8 worksheet.
+
+    This is a :class:`list` of rows, and each row is a :class:`list` of
+    :class:`Cell` objects, i.e. the same shape and element type as::
+
+        [sheet.row_slice(rowx, colxlo, colxhi)
+         for rowx in range(rowxlo, rowxhi)]
+
+    Indexes passed to :meth:`cell` and the other accessor methods are window
+    relative, exactly like the rows in the list.  The absolute bounds of the
+    window are available as :attr:`rowxlo`, :attr:`rowxhi`, :attr:`colxlo`
+    and :attr:`colxhi`.
+
+    Instances are returned by
+    :meth:`xlrd.book.Book.sheet_by_index_window`.
+    """
+
+    def __init__(self, rows, book=None, name='', number=-1,
+                 rowxlo=0, rowxhi=None, colxlo=0, colxhi=None,
+                 formatting_info=False, ragged_rows=False):
+        list.__init__(self, rows)
+        self.book = book
+        self.name = name
+        self.number = number
+        self.rowxlo = rowxlo
+        self.rowxhi = rowxhi if rowxhi is not None else rowxlo + len(rows)
+        self.colxlo = colxlo
+        if colxhi is None:
+            colxhi = colxlo + (len(rows[0]) if rows else 0)
+        self.colxhi = colxhi
+        self.ncols = max(0, colxhi - colxlo)
+        self.row_lo = self.rowxlo
+        self.row_hi = self.rowxhi
+        self.col_lo = self.colxlo
+        self.col_hi = self.colxhi
+        self.window_rowxlo = self.rowxlo
+        self.window_rowxhi = self.rowxhi
+        self.window_colxlo = self.colxlo
+        self.window_colxhi = self.colxhi
+        self.nrows = len(rows)
+        self.window_nrows = self.nrows
+        self.window_ncols = self.ncols
+        self.formatting_info = formatting_info
+        self.ragged_rows = ragged_rows
+        self.biff_version = book.biff_version if book is not None else None
+        self.logfile = book.logfile if book is not None else sys.stdout
+        self.verbosity = book.verbosity if book is not None else 0
+        self._position = 0
+        self._cell_values = [[cell.value for cell in row] for row in rows]
+        self._cell_types = [[cell.ctype for cell in row] for row in rows]
+        if formatting_info:
+            self._cell_xf_indexes = [
+                [cell.xf_index for cell in row] for row in rows
+            ]
+        else:
+            self._cell_xf_indexes = []
+        self._first_full_rowx = -1
+        self._maxdatarowx = self.rowxhi - 1 if self.nrows else -1
+        self._maxdatacolx = self.colxhi - 1 if self.ncols else -1
+        self.utter_max_rows = 65536
+        self.utter_max_cols = 256
+        self._xf_index_to_xl_type_map = (
+            book._xf_index_to_xl_type_map if book is not None else {}
+        )
+        self._xf_index_stats = [0, 0, 0, 0]
+
+    def _copy_metadata_from(self, sheet):
+        for attr in (
+            'visibility', 'defcolwidth', 'standardwidth',
+            'default_row_height', 'default_row_height_mismatch',
+            'default_row_hidden', 'default_additional_space_above',
+            'default_additional_space_below',
+            'colinfo_map', 'rowinfo_map', 'col_label_ranges',
+            'row_label_ranges', 'merged_cells', 'rich_text_runlist_map',
+            'hyperlink_list', 'hyperlink_map', 'cell_note_map',
+            'horizontal_page_breaks', 'vertical_page_breaks',
+            'first_visible_rowx', 'first_visible_colx',
+            'show_formulas', 'show_grid_lines', 'show_sheet_headers',
+            'panes_are_frozen', 'show_zero_values',
+            'automatic_grid_line_colour', 'columns_from_right_to_left',
+            'show_outline_symbols', 'remove_splits_if_pane_freeze_is_removed',
+            'sheet_selected', 'sheet_visible', 'show_in_page_break_preview',
+            'gridline_colour_index', 'gridline_colour_rgb', 'gcw',
+            'scl_mag_factor', 'cooked_page_break_preview_mag_factor',
+            'cooked_normal_view_mag_factor',
+            'cached_page_break_preview_mag_factor',
+            'cached_normal_view_mag_factor',
+            'vert_split_pos', 'horz_split_pos',
+            'horz_split_first_visible', 'vert_split_first_visible',
+            'split_active_pane', 'has_pane_record',
+            '_dimnrows', '_dimncols',
+        ):
+            if hasattr(sheet, attr):
+                setattr(self, attr, getattr(sheet, attr))
+
+    def __getitem__(self, item):
+        if isinstance(item, tuple):
+            if len(item) != 2:
+                raise ValueError("SheetWindow indexes must be row or (row, col)")
+            return self.cell(item[0], item[1])
+        return list.__getitem__(self, item)
+
+    def _relative_row(self, rowx):
+        if 0 <= rowx < self.nrows:
+            return rowx
+        relative = rowx - self.rowxlo
+        if 0 <= relative < self.nrows:
+            return relative
+        return rowx
+
+    def _relative_col(self, colx):
+        if 0 <= colx < self.ncols:
+            return colx
+        relative = colx - self.colxlo
+        if 0 <= relative < self.ncols:
+            return relative
+        return colx
+
+    def cell(self, rowx, colx):
+        """
+        :class:`Cell` at ``(rowx, colx)``.
+
+        Coordinates are window relative.  Absolute worksheet coordinates are
+        also accepted when they fall outside the relative index range, e.g.
+        ``window.cell(1000, 0)`` for a window starting at row 1000.
+        """
+        rowx = self._relative_row(rowx)
+        colx = self._relative_col(colx)
+        return list.__getitem__(self, rowx)[colx]
+
+    def cell_value(self, rowx, colx):
+        return self.cell(rowx, colx).value
+
+    def cell_type(self, rowx, colx):
+        return self.cell(rowx, colx).ctype
+
+    def cell_xf_index(self, rowx, colx):
+        xfx = self.cell(rowx, colx).xf_index
+        if xfx is None:
+            self.req_fmt_info()
+        return xfx
+
+    def cell_abs(self, rowx, colx):
+        "Cell using absolute worksheet coordinates."
+        row = rowx - self.rowxlo
+        col = colx - self.colxlo
+        if not (0 <= row < self.nrows and 0 <= col < self.ncols):
+            raise IndexError("cell (%r, %r) outside window" % (rowx, colx))
+        return self.cell(row, col)
+
+    def row_len(self, rowx):
+        return len(list.__getitem__(self, self._relative_row(rowx)))
+
+    def row(self, rowx):
+        return list(self[self._relative_row(rowx)])
+
+    def get_rows(self):
+        return (self.row(rowx) for rowx in xrange(self.nrows))
+
+    def row_values(self, rowx, start_colx=0, end_colx=None):
+        return [cell.value for cell in self.row_slice(rowx, start_colx, end_colx)]
+
+    def row_types(self, rowx, start_colx=0, end_colx=None):
+        return [cell.ctype for cell in self.row_slice(rowx, start_colx, end_colx)]
+
+    def row_slice(self, rowx, start_colx=0, end_colx=None):
+        rowx = self._relative_row(rowx)
+        nc = self.row_len(rowx)
+        if start_colx < 0:
+            start_colx += nc
+            if start_colx < 0:
+                start_colx = 0
+        if end_colx is None or end_colx > nc:
+            end_colx = nc
+        elif end_colx < 0:
+            end_colx += nc
+        return list.__getitem__(self, rowx)[start_colx:end_colx]
+
+    def col_slice(self, colx, start_rowx=0, end_rowx=None):
+        colx = self._relative_col(colx)
+        nr = self.nrows
+        if start_rowx < 0:
+            start_rowx += nr
+            if start_rowx < 0:
+                start_rowx = 0
+        if end_rowx is None or end_rowx > nr:
+            end_rowx = nr
+        elif end_rowx < 0:
+            end_rowx += nr
+        return [self.cell(rowx, colx) for rowx in xrange(start_rowx, end_rowx)]
+
+    col = col_slice
+
+    def col_values(self, colx, start_rowx=0, end_rowx=None):
+        return [cell.value for cell in self.col_slice(colx, start_rowx, end_rowx)]
+
+    def col_types(self, colx, start_rowx=0, end_rowx=None):
+        return [cell.ctype for cell in self.col_slice(colx, start_rowx, end_rowx)]
+
+    def req_fmt_info(self):
+        if not self.formatting_info:
+            raise XLRDError("Feature requires open_workbook(..., formatting_info=True)")
+
+
+def read_sheet_window(book, sheetx, rowxlo, rowxhi,
+                      colxlo=0, colxhi=None):
+    """
+    Module-level convenience wrapper for
+    :meth:`xlrd.book.Book.sheet_by_index_window`.
+    """
+    return book.sheet_by_index_window(
+        sheetx, rowxlo, rowxhi, colxlo, colxhi)
+
+
+read_window = read_sheet_window
+window = read_sheet_window

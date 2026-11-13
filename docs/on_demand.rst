@@ -55,3 +55,38 @@ explicitly in the finally part of a try/finally block.
 
 The Book object is also a context manager, so  you can wrap your code in a
 ``with`` statement that will make sure underlying resources are closed.
+
+
+Reading a row window without loading the whole sheet
+----------------------------------------------------
+
+For BIFF8 (``.xls``) workbooks, :meth:`Book.sheet_by_index_window` reads a
+rectangular slice directly from the worksheet stream.  It is intended for
+callers that only need a few hundred rows from a large legacy worksheet:
+
+.. code-block:: python
+
+    book = xlrd.open_workbook('large.xls', on_demand=True)
+    window = book.sheet_by_index_window(
+        sheetx=0,
+        rowxlo=1000,
+        rowxhi=1200,
+        colxlo=0,
+        colxhi=8,
+    )
+    for row in window:
+        for cell in row:
+            print(cell.ctype, cell.value, cell.xf_index)
+
+The result is a :class:`~xlrd.sheet.SheetWindow`: a list of rows of
+:class:`~xlrd.sheet.Cell` objects, matching what
+``sheet.row_slice(rowx, colxlo, colxhi)`` returns for each row.  Only cells
+inside the requested half-open row and column intervals are stored.  ``SST``,
+``XF``, format and other shared worksheet metadata are still read normally.
+
+Window reads work with ``on_demand=True`` and may be repeated; use
+:meth:`Book.release_resources` when finished.  If resources have already been
+released but a complete sheet is still loaded, the window is sliced from that
+sheet.  If neither the stream nor the sheet is available, an
+:class:`~xlrd.biffh.XLRDError` is raised.  Non-BIFF8 workbooks are rejected by
+this entry point.

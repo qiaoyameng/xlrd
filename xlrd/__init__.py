@@ -16,7 +16,7 @@ from .book import Book, colname, open_workbook_xls
 from .compdoc import SIGNATURE as XLS_SIGNATURE
 from .formula import *  # is constrained by __all__
 from .info import __VERSION__, __version__
-from .sheet import empty_cell
+from .sheet import Cell, Sheet, SheetWindow, empty_cell
 from .xldate import XLDateError, xldate_as_datetime, xldate_as_tuple
 
 
@@ -183,6 +183,21 @@ def open_workbook(filename=None,
     )
 
     return bk
+
+
+def read_sheet_window(book, sheetx, rowxlo, rowxhi,
+                      colxlo=0, colxhi=None):
+    """
+    Read a rectangular window of a BIFF8 worksheet.
+
+    This is a convenience wrapper for
+    :meth:`xlrd.book.Book.sheet_by_index_window`.
+    """
+    return book.sheet_by_index_window(
+        sheetx, rowxlo, rowxhi, colxlo, colxhi)
+
+
+read_window = read_sheet_window
 
 
 def dump(filename, outfile=sys.stdout, unnumbered=False):
