@@ -14,6 +14,11 @@ from .biffh import (
 )
 from .book import Book, colname, open_workbook_xls
 from .compdoc import SIGNATURE as XLS_SIGNATURE
+from .diagnostics import (
+    ContainerDiagnosis,
+    Issue,
+    diagnose_workbook_container,
+)
 from .formula import *  # is constrained by __all__
 from .info import __VERSION__, __version__
 from .sheet import empty_cell

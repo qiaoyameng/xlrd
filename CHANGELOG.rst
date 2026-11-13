@@ -1,6 +1,16 @@
 Changes
 =======
 
+Unreleased
+----------
+
+- Add a read-only OLE2 container diagnostic entry point,
+  :func:`xlrd.diagnose_workbook_container`, which reports directory entries,
+  FAT/miniFAT chains, sector cross-occupancy, out-of-bounds sectors, cycles
+  and declared-length mismatches before any BIFF parsing is attempted.
+  The diagnosis is bounded by a traversal budget and never repairs or hides
+  damage; :func:`xlrd.open_workbook` keeps its existing exception contract.
+
 2.0.2 (14 June 2025)
 --------------------
 

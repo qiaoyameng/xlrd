@@ -23,7 +23,13 @@ xlrd.compdoc
 ------------
 
 .. automodule:: xlrd.compdoc
-   :members:
+    :members:
+
+xlrd.diagnostics
+-----------------
+
+.. automodule:: xlrd.diagnostics
+    :members:
 
 xlrd.formatting
 ---------------
